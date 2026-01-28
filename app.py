@@ -21,7 +21,6 @@ def apply_transformation(data, method):
 def crd_anova_from_transformed(df_trans, n_treat, n_rep):
     """
     Calculates ANOVA stats specifically for CRD (One-Way ANOVA).
-    Differences from RBD: No Block/Rep Sum of Squares.
     """
     vals = df_trans.values
     grand_mean = vals.mean()
@@ -42,7 +41,7 @@ def crd_anova_from_transformed(df_trans, n_treat, n_rep):
     # Degrees of Freedom
     df_tr = n_treat - 1
     df_total = N - 1
-    df_err = df_total - df_tr  # or n_treat * (n_rep - 1)
+    df_err = df_total - df_tr 
     
     # Mean Squares
     MS_tr = TrSS / df_tr if df_tr > 0 else 0
@@ -97,8 +96,7 @@ def generate_integer_plants(target_mean, n_plants, variation=0.2):
 
 def generate_exact_mean_data_crd(target_means, n_rep, n_plants, target_cv, transform_type):
     """
-    Generates data hierarchy: Treatment -> Replication -> Integer Plants
-    Optimizes for CRD ANOVA.
+    Generates data hierarchy.
     """
     n_treat = len(target_means)
     best_data = None
@@ -116,10 +114,6 @@ def generate_exact_mean_data_crd(target_means, n_rep, n_plants, target_cv, trans
         for t_idx, mean in enumerate(target_means):
             # Generate raw replication values based on normal distribution around mean
             raw_reps = np.random.normal(mean, current_noise, n_rep)
-            # Center them exactly to the mean to avoid drift, then add noise back effectively via plant generation
-            # For CRD, we want the variation BETWEEN reps to equal the noise
-            
-            # Ensure non-negative
             raw_reps = np.maximum(raw_reps, 0)
             
             actual_reps_for_this_treatment = []
@@ -170,14 +164,17 @@ def generate_exact_mean_data_crd(target_means, n_rep, n_plants, target_cv, trans
 
 st.set_page_config(page_title="CRD Generator", layout="wide")
 
-st.title("🐞 CRD Integer Plant-Wise Generator")
+st.title("🐞 CRD Integer Generator (Supports Large Plot)")
 st.markdown("""
-This tool generates whole number insect counts for a **Completely Randomized Design (CRD)**.
+Generates insect counts for **Completely Randomized Design (CRD)**.
+* **Standard CRD:** Set Replications > 1.
+* **Large Plot Technique:** Set **Replication = 1** and specify Plants per Replication. The tool will treat the plants as the replicates for the ANOVA.
 """)
 
 # --- SIDEBAR INPUTS ---
 st.sidebar.header("1. Experimental Design")
-n_reps = st.sidebar.number_input("Number of Replications", min_value=2, value=4)
+# Changed min_value to 1 to allow Large Plot technique
+n_reps = st.sidebar.number_input("Number of Replications", min_value=1, value=4)
 n_plants = st.sidebar.number_input("Plants per Replication", min_value=1, value=3)
 
 st.sidebar.header("2. Input Means")
@@ -202,70 +199,51 @@ if generate_btn:
     except:
         st.error("Invalid means input.")
         st.stop()
+        
+    # LOGIC SWITCH FOR LARGE PLOT (1 REP)
+    is_large_plot = (n_reps == 1)
+    
+    if is_large_plot and n_plants < 2:
+        st.error("For Single Replication (Large Plot), you must have at least 2 Plants to calculate ANOVA.")
+        st.stop()
 
     with st.spinner("Generating CRD data..."):
-        result = generate_exact_mean_data_crd(
-            target_means, n_reps, n_plants, target_cv, transform_type
-        )
+        if is_large_plot:
+            # Trick the generator: Treat 'Plants' as 'Reps' to get the correct ANOVA variance
+            # We generate 'n_plants' reps, each having 1 plant.
+            result = generate_exact_mean_data_crd(
+                target_means, n_rep=n_plants, n_plants=1, target_cv=target_cv, transform_type=transform_type
+            )
+        else:
+            # Standard Mode
+            result = generate_exact_mean_data_crd(
+                target_means, n_rep=n_reps, n_plants=n_plants, target_cv=target_cv, transform_type=transform_type
+            )
 
     if result:
         raw_arr, trans_arr, res, df_plants = result
         
-        # --- PREPARE EXPORT FORMAT (WIDE) ---
-        # 1. Pivot the data: Index=[Treatment, Plant], Columns=Replication
-        df_wide = df_plants.pivot(index=['Treatment', 'Plant_No'], columns='Replication', values='Insect_Count')
-        
-        # 2. Rename columns
-        roman_map = {'R1': 'RI', 'R2': 'RII', 'R3': 'RIII', 'R4': 'RIV', 'R5': 'RV', 'R6': 'RVI'}
-        new_cols = [roman_map.get(c, c) for c in df_wide.columns]
-        df_wide.columns = new_cols
-
-        # --- DISPLAY RESULTS ---
-        st.markdown("### 📊 Statistical Summary (CRD)")
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Achieved CV %", f"{res['cv']:.2f}%", delta=f"{res['cv']-target_cv:.2f}")
-        is_sig = res['p_val'] < 0.05
-        sig_text = "Significant" if is_sig else "Non-Significant"
-        m2.metric("P-Value", f"{res['p_val']:.4f}")
-        m3.metric("Significance", sig_text, delta="Match" if (sig_text[0] == sig_req[0]) else "Mismatch")
-        m4.metric("SEm / CD", f"{res['sem']:.3f} / {res['cd']:.3f}")
-        
-        st.divider()
-
-        # --- WIDE FORMAT TAB ---
-        t1, t2, t3 = st.tabs(["📥 Export Wide Format (CSV)", "📊 Replication Summary", "📉 ANOVA Table"])
-        
-        with t1:
-            st.subheader("Wide Format Data")
-            st.dataframe(df_wide, use_container_width=True)
+        # --- DATA FORMATTING & RENAMING ---
+        if is_large_plot:
+            # The generator returned 'Replication' as R1..Rn and 'Plant_No' as P1.
+            # We need to swap this visually for the user.
+            # Old 'Replication' (R1, R2...) -> becomes 'Plant_No' (P1, P2...)
+            # Old 'Plant_No' -> Discard, replace with 'RI'
             
-            # CSV Button
-            csv_wide = df_wide.to_csv().encode('utf-8')
-            st.download_button(
-                label="📥 Download Wide Format CSV",
-                data=csv_wide,
-                file_name="crd_wide_format_data.csv",
-                mime="text/csv",
-                type="primary"
-            )
-
-        with t2:
-            st.write("**Replication Means (Calculated)**")
-            cols = [f"R{i+1}" for i in range(n_reps)]
-            rows = [f"T{i+1}" for i in range(len(target_means))]
-            df_reps = pd.DataFrame(raw_arr, index=rows, columns=cols)
-            st.dataframe(df_reps.style.format("{:.2f}"))
-
-        with t3:
-            st.write("**ANOVA on Transformed Data (CRD)**")
-            anova_data = {
-                'SOURCE': ['Treatment', 'Error', 'Total'],
-                'DF': [res['df_tr'], res['df_err'], res['df_total']],
-                'SS': [res['ss_tr'], res['ss_err'], res['ss_total']],
-                'MS': [res['ms_tr'], res['ms_err'], ''],
-                'F-Calc': [f"{res['f_calc']:.4f}", '', ''], 
-                'Sig?': [sig_text, '', '']
-            }
+            df_plants['Plant_No'] = df_plants['Replication'].str.replace('R', 'P')
+            df_plants['Replication'] = 'RI' # Fixed single rep
             
-            df_disp = pd.DataFrame(anova_data)
-            st.table(df_disp)
+            # For Wide Format: Rows=Treatment, Cols=Plants
+            df_wide = df_plants.pivot(index='Treatment', columns='Plant_No', values='Insect_Count')
+            
+            # Sort columns numerically (P1, P2, P10...)
+            cols = sorted(df_wide.columns, key=lambda x: int(x[1:]))
+            df_wide = df_wide[cols]
+            
+        else:
+            # Standard CRD Format
+            # Pivot: Index=[Treatment, Plant], Columns=Replication
+            df_wide = df_plants.pivot(index=['Treatment', 'Plant_No'], columns='Replication', values='Insect_Count')
+            
+            # Rename columns
+            roman_map =
