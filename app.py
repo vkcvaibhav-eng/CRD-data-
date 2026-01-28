@@ -82,11 +82,17 @@ def generate_integer_plants(target_mean, n_plants, variation=0.2):
     if remainder > 0:
         indices = np.random.choice(n_plants, remainder, replace=False)
         plants[indices] += 1
+
+    # --- FIX FOR VALUE ERROR ---
+    # If there is only 1 plant (Large Plot Mode logic), we cannot swap.
+    if n_plants < 2:
+        return plants
         
     # Shuffle values to add noise
     n_swaps = int(target_sum * variation) 
     
     for _ in range(n_swaps):
+        # This line was causing the error when n_plants was 1
         idx1, idx2 = np.random.choice(n_plants, 2, replace=False)
         if plants[idx2] > 0:
             plants[idx1] += 1
@@ -246,7 +252,8 @@ if generate_btn:
             
         else:
             # Standard CRD: Pivot by Replication
-            # Broken into multiple lines to avoid SyntaxError
+            # --- FIX FOR SYNTAX ERROR ---
+            # Properly closed parentheses here
             df_wide = df_plants.pivot(
                 index=['Treatment', 'Plant_No'], 
                 columns='Replication', 
