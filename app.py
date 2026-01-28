@@ -20,7 +20,7 @@ def apply_transformation(data, method):
 
 def crd_anova_from_transformed(df_trans, n_treat, n_rep):
     """
-    Calculates ANOVA stats specifically for CRD (One-Way ANOVA).
+    Calculates ANOVA stats specifically for CRD.
     """
     vals = df_trans.values
     grand_mean = vals.mean()
@@ -168,14 +168,14 @@ st.title("🐞 CRD Integer Generator (Supports Large Plot)")
 st.markdown("""
 Generates insect counts for **Completely Randomized Design (CRD)**.
 * **Standard CRD:** Set Replications > 1.
-* **Large Plot Technique:** Set **Replication = 1** and specify Plants per Replication. The tool will treat the plants as the replicates for the ANOVA.
+* **Large Plot Technique:** Set **Replication = 1** and specify Plants per Replication. 
+  * *Note:* In Large Plot mode, the **Plants** are treated as the replicates for the ANOVA.
 """)
 
 # --- SIDEBAR INPUTS ---
 st.sidebar.header("1. Experimental Design")
-# Changed min_value to 1 to allow Large Plot technique
 n_reps = st.sidebar.number_input("Number of Replications", min_value=1, value=4)
-n_plants = st.sidebar.number_input("Plants per Replication", min_value=1, value=3)
+n_plants = st.sidebar.number_input("Plants per Replication", min_value=1, value=5)
 
 st.sidebar.header("2. Input Means")
 st.sidebar.info("Paste Treatment Means (comma separated)")
@@ -200,22 +200,22 @@ if generate_btn:
         st.error("Invalid means input.")
         st.stop()
         
-    # LOGIC SWITCH FOR LARGE PLOT (1 REP)
+    # DETECT LARGE PLOT MODE
     is_large_plot = (n_reps == 1)
     
     if is_large_plot and n_plants < 2:
-        st.error("For Single Replication (Large Plot), you must have at least 2 Plants to calculate ANOVA.")
+        st.error("For Large Plot (1 Replication), you must have at least 2 Plants.")
         st.stop()
 
     with st.spinner("Generating CRD data..."):
         if is_large_plot:
-            # Trick the generator: Treat 'Plants' as 'Reps' to get the correct ANOVA variance
-            # We generate 'n_plants' reps, each having 1 plant.
+            # === LARGE PLOT LOGIC ===
+            # Treat 'Plants' as 'Replications' for stats calculation
             result = generate_exact_mean_data_crd(
                 target_means, n_rep=n_plants, n_plants=1, target_cv=target_cv, transform_type=transform_type
             )
         else:
-            # Standard Mode
+            # === STANDARD CRD LOGIC ===
             result = generate_exact_mean_data_crd(
                 target_means, n_rep=n_reps, n_plants=n_plants, target_cv=target_cv, transform_type=transform_type
             )
@@ -223,27 +223,87 @@ if generate_btn:
     if result:
         raw_arr, trans_arr, res, df_plants = result
         
-        # --- DATA FORMATTING & RENAMING ---
+        # --- DATA FORMATTING & EXPORT PREP ---
+        
         if is_large_plot:
-            # The generator returned 'Replication' as R1..Rn and 'Plant_No' as P1.
-            # We need to swap this visually for the user.
-            # Old 'Replication' (R1, R2...) -> becomes 'Plant_No' (P1, P2...)
-            # Old 'Plant_No' -> Discard, replace with 'RI'
+            # The generator returned 'Replication' as R1, R2... (which are actually Plants)
+            # Create a clean Wide Format DataFrame: Rows=Treatment, Cols=Plants
             
-            df_plants['Plant_No'] = df_plants['Replication'].str.replace('R', 'P')
-            df_plants['Replication'] = 'RI' # Fixed single rep
+            df_plants['Real_Plant_No'] = df_plants['Replication'].str.replace("R", "P")
             
-            # For Wide Format: Rows=Treatment, Cols=Plants
-            df_wide = df_plants.pivot(index='Treatment', columns='Plant_No', values='Insect_Count')
+            df_wide = df_plants.pivot(
+                index='Treatment', 
+                columns='Real_Plant_No', 
+                values='Insect_Count'
+            )
             
-            # Sort columns numerically (P1, P2, P10...)
+            # Sort columns numerically (P1, P2... P10)
             cols = sorted(df_wide.columns, key=lambda x: int(x[1:]))
             df_wide = df_wide[cols]
             
-        else:
-            # Standard CRD Format
-            # Pivot: Index=[Treatment, Plant], Columns=Replication
-            df_wide = df_plants.pivot(index=['Treatment', 'Plant_No'], columns='Replication', values='Insect_Count')
+            # Add a visual "Replication" column for the CSV (All are RI)
+            df_wide.insert(0, "Replication", "RI")
             
-            # Rename columns
-            roman_map =
+        else:
+            # Standard CRD: Pivot by Replication
+            # Broken into multiple lines to avoid SyntaxError
+            df_wide = df_plants.pivot(
+                index=['Treatment', 'Plant_No'], 
+                columns='Replication', 
+                values='Insect_Count'
+            )
+            
+            # Rename columns to Roman Numerals
+            roman_map = {'R1': 'RI', 'R2': 'RII', 'R3': 'RIII', 'R4': 'RIV', 'R5': 'RV', 'R6': 'RVI'}
+            new_cols = [roman_map.get(c, c) for c in df_wide.columns]
+            df_wide.columns = new_cols
+
+        # --- DISPLAY RESULTS ---
+        st.markdown("### 📊 Statistical Summary (CRD)")
+        if is_large_plot:
+            st.info("ℹ️ **Mode:** Large Plot Technique (Plants treated as Replicates for ANOVA)")
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Achieved CV %", f"{res['cv']:.2f}%", delta=f"{res['cv']-target_cv:.2f}")
+        is_sig = res['p_val'] < 0.05
+        sig_text = "Significant" if is_sig else "Non-Significant"
+        m2.metric("P-Value", f"{res['p_val']:.4f}")
+        m3.metric("Significance", sig_text, delta="Match" if (sig_text[0] == sig_req[0]) else "Mismatch")
+        m4.metric("SEm / CD", f"{res['sem']:.3f} / {res['cd']:.3f}")
+        
+        st.divider()
+
+        # --- TABS ---
+        t1, t2, t3 = st.tabs(["📥 Export Wide Format (CSV)", "📊 Raw Data List", "📉 ANOVA Table"])
+        
+        with t1:
+            st.subheader("Wide Format Data")
+            st.dataframe(df_wide, use_container_width=True)
+            
+            # CSV Button
+            csv_wide = df_wide.to_csv().encode('utf-8')
+            st.download_button(
+                label="📥 Download Wide Format CSV",
+                data=csv_wide,
+                file_name="crd_large_plot_data.csv" if is_large_plot else "crd_standard_data.csv",
+                mime="text/csv",
+                type="primary"
+            )
+
+        with t2:
+            st.write("**Full Generated Data List**")
+            st.dataframe(df_plants, use_container_width=True)
+
+        with t3:
+            st.write("**ANOVA Table (CRD)**")
+            anova_data = {
+                'SOURCE': ['Treatment', 'Error', 'Total'],
+                'DF': [res['df_tr'], res['df_err'], res['df_total']],
+                'SS': [res['ss_tr'], res['ss_err'], res['ss_total']],
+                'MS': [res['ms_tr'], res['ms_err'], ''],
+                'F-Calc': [f"{res['f_calc']:.4f}", '', ''], 
+                'Sig?': [sig_text, '', '']
+            }
+            
+            df_disp = pd.DataFrame(anova_data)
+            st.table(df_disp)
