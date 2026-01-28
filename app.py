@@ -15,6 +15,8 @@ def apply_transformation(data, method):
     elif method == "Arcsine (Predicted %)":
         clipped = np.clip(data, 0, 100)
         return np.degrees(np.arcsin(np.sqrt(clipped / 100)))
+    elif method == "None (Original Data)":
+        return data
     else:
         return data
 
@@ -82,21 +84,16 @@ def generate_integer_plants(target_mean, n_plants, variation=0.2):
     if remainder > 0:
         indices = np.random.choice(n_plants, remainder, replace=False)
         plants[indices] += 1
-
-    # --- FIX FOR VALUE ERROR ---
-    # If there is only 1 plant (Large Plot Mode logic), we cannot swap.
-    if n_plants < 2:
-        return plants
         
     # Shuffle values to add noise
-    n_swaps = int(target_sum * variation) 
-    
-    for _ in range(n_swaps):
-        # This line was causing the error when n_plants was 1
-        idx1, idx2 = np.random.choice(n_plants, 2, replace=False)
-        if plants[idx2] > 0:
-            plants[idx1] += 1
-            plants[idx2] -= 1
+    # Fix: Check if n_plants > 1 before swapping
+    if n_plants > 1:
+        n_swaps = int(target_sum * variation) 
+        for _ in range(n_swaps):
+            idx1, idx2 = np.random.choice(n_plants, 2, replace=False)
+            if plants[idx2] > 0:
+                plants[idx1] += 1
+                plants[idx2] -= 1
             
     return plants
 
@@ -188,7 +185,11 @@ st.sidebar.info("Paste Treatment Means (comma separated)")
 means_input = st.sidebar.text_area("Treatment Means", "10, 12, 14, 13, 15, 11")
 
 st.sidebar.header("3. Targets")
-transform_type = st.sidebar.selectbox("Transformation", ["Square Root (√x + 0.5)", "Arcsine (Predicted %)"])
+# ADDED "None (Original Data)" OPTION
+transform_type = st.sidebar.selectbox(
+    "Transformation", 
+    ["None (Original Data)", "Square Root (√x + 0.5)", "Arcsine (Predicted %)"]
+)
 target_cv = st.sidebar.number_input("Target CV %", min_value=0.1, value=8.5, step=0.1)
 sig_req = st.sidebar.selectbox("Significance", ["Significant (S)", "Non-Significant (NS)"])
 
@@ -252,8 +253,6 @@ if generate_btn:
             
         else:
             # Standard CRD: Pivot by Replication
-            # --- FIX FOR SYNTAX ERROR ---
-            # Properly closed parentheses here
             df_wide = df_plants.pivot(
                 index=['Treatment', 'Plant_No'], 
                 columns='Replication', 
@@ -302,7 +301,7 @@ if generate_btn:
             st.dataframe(df_plants, use_container_width=True)
 
         with t3:
-            st.write("**ANOVA Table (CRD)**")
+            st.write(f"**ANOVA on Data ({transform_type})**")
             anova_data = {
                 'SOURCE': ['Treatment', 'Error', 'Total'],
                 'DF': [res['df_tr'], res['df_err'], res['df_total']],
